@@ -11,6 +11,7 @@ import (
 	"os/exec"
 
 	"github.com/machinebox/sdk-go/facebox"
+	"gocv.io/x/gocv"
 )
 
 const boundary = "informs"
@@ -29,11 +30,51 @@ func main() {
 
 func cam(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary="+boundary)
-	cmd := exec.CommandContext(r.Context(), "./capture.py")
-	cmd.Stdout = w
-	err := cmd.Run()
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	// open webcam
+	webcam, err := gocv.VideoCaptureDevice(int(0))
 	if err != nil {
-		log.Println("[ERROR] capturing webcam", err)
+		log.Println("[ERROR] opening webcam", err)
+		http.Error(w, "webcam unavailable", http.StatusInternalServerError)
+		return
+	}
+	defer webcam.Close()
+
+	// prepare image matrix
+	img := gocv.NewMat()
+	defer img.Close()
+
+	for {
+		select {
+		case <- r.Context().Done():
+			log.Println("[INFO] request closed")
+			return
+		default:
+			if ok := webcam.Read(img); !ok {
+				log.Println("[ERROR] reading webcam", err)
+				return
+			}
+
+			if img.Empty() {
+				continue
+			}
+
+			b, err := gocv.IMEncode(".jpeg", img)
+			if err != nil {
+				log.Println("[ERROR] encoding to jpeg", err)
+				continue
+			}
+
+			w.Write([]byte("Content-Type: image/jpeg\r\n"))
+			w.Write([]byte(fmt.Sprintf("Content-Length: %d\r\n\r\n", len(b))))
+			w.Write(b)
+			w.Write([]byte("\r\n"))
+			w.Write([]byte("--informs\r\n"))
+
+			gocv.WaitKey(1)
+		}
 	}
 }
 
